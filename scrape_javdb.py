@@ -393,30 +393,30 @@ def download_covers(items: List[JavdbItem], session: requests.Session, covers_di
 
 def display_results(items: List[JavdbItem]) -> None:
     """Display results in a terminal-friendly format"""
-    print("\n" + "="*80)
-    print(f"Found {len(items)} items:")
-    print("="*80)
+    logging.info("\n" + "="*80)
+    logging.info(f"Found {len(items)} items:")
+    logging.info("="*80)
     
     for i, item in enumerate(items, 1):
-        print(f"\n[{i}] {item.title_zh or item.title}")
+        logging.info(f"\n[{i}] {item.title_zh or item.title}")
         if item.code:
-            print(f"    Code: {item.code}")
+            logging.info(f"    Code: {item.code}")
         if item.actors:
-            print(f"    Actors: {', '.join(item.actors[:3])}{'...' if len(item.actors) > 3 else ''}")
+            logging.info(f"    Actors: {', '.join(item.actors[:3])}{'...' if len(item.actors) > 3 else ''}")
         if item.categories:
-            print(f"    Categories: {', '.join(item.categories[:3])}{'...' if len(item.categories) > 3 else ''}")
+            logging.info(f"    Categories: {', '.join(item.categories[:3])}{'...' if len(item.categories) > 3 else ''}")
         if item.cover_url:
             if item.cover_url.startswith('http'):
-                print(f"    Cover: {item.cover_url}")
+                logging.info(f"    Cover: {item.cover_url}")
             else:
-                print(f"    Cover: {item.cover_url} (local)")
+                logging.info(f"    Cover: {item.cover_url} (local)")
         if item.magnets:
-            print(f"    Magnets ({len(item.magnets)}):")
+            logging.info(f"    Magnets ({len(item.magnets)}):")
             for j, magnet in enumerate(item.magnets, 1):
-                print(f"      {j}. {magnet}")
+                logging.info(f"      {j}. {magnet}")
         if item.detail_url:
-            print(f"    Detail: {item.detail_url}")
-        print("-" * 80)
+            logging.info(f"    Detail: {item.detail_url}")
+        logging.info("-" * 80)
 
 
 def scrape_listing(
