@@ -328,6 +328,62 @@ def polite_sleep(delay_seconds: float) -> None:
     time.sleep(max(0.0, delay_seconds + random.uniform(-jitter, jitter)))
 
 
+def download_cover(session: requests.Session, cover_url: str, local_path: str) -> bool:
+    """Download a cover image with retries"""
+    try:
+        resp = session.get(cover_url, timeout=15, stream=True)
+        resp.raise_for_status()
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return True
+    except Exception as e:
+        logging.warning(f"Failed to download cover {cover_url}: {e}")
+        return False
+
+
+def download_covers(items: List[JavdbItem], session: requests.Session, covers_dir: str) -> None:
+    """Download all cover images"""
+    if not items:
+        return
+    
+    os.makedirs(covers_dir, exist_ok=True)
+    downloaded = 0
+    total = sum(1 for item in items if item.cover_url)
+    
+    if total == 0:
+        logging.info("No cover images to download")
+        return
+    
+    logging.info(f"Downloading {total} cover images to {covers_dir}/")
+    
+    for i, item in enumerate(items, 1):
+        if not item.cover_url:
+            continue
+        
+        # Generate filename from code or title
+        if item.code:
+            filename = f"{item.code}.jpg"
+        else:
+            # Sanitize title for filename
+            safe_title = "".join(c for c in item.title if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_title = safe_title[:50]  # Limit length
+            filename = f"{safe_title}.jpg"
+        
+        local_path = os.path.join(covers_dir, filename)
+        
+        if download_cover(session, item.cover_url, local_path):
+            downloaded += 1
+            # Update cover_url to local path for display
+            item.cover_url = local_path
+        
+        if i % 5 == 0 or i == total:
+            logging.info(f"Downloaded {downloaded}/{i} covers")
+    
+    logging.info(f"Downloaded {downloaded}/{total} cover images")
+
+
 def display_results(items: List[JavdbItem]) -> None:
     """Display results in a terminal-friendly format"""
     print("\n" + "="*80)
@@ -343,7 +399,10 @@ def display_results(items: List[JavdbItem]) -> None:
         if item.categories:
             print(f"    Categories: {', '.join(item.categories[:3])}{'...' if len(item.categories) > 3 else ''}")
         if item.cover_url:
-            print(f"    Cover: {item.cover_url}")
+            if item.cover_url.startswith('http'):
+                print(f"    Cover: {item.cover_url}")
+            else:
+                print(f"    Cover: {item.cover_url} (local)")
         if item.magnets:
             print(f"    Magnets ({len(item.magnets)}):")
             for j, magnet in enumerate(item.magnets[:2], 1):  # Show first 2 magnets
@@ -726,6 +785,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--search-to-ja", action="store_true", default=True, help="Translate search keyword to Japanese before filtering")
     p.add_argument("--search-mode", choices=["or", "and"], default="or", help="Multi-keyword match mode: or/and")
     p.add_argument("--show", action="store_true", help="Display results in terminal (title_zh, cover, magnets)")
+    p.add_argument("--download-covers", action="store_true", help="Download cover images locally")
+    p.add_argument("--covers-dir", default="covers", help="Directory to save cover images (default: covers)")
     return p.parse_args(argv)
 
 
@@ -867,6 +928,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             delay_seconds=args.detail_delay,
             show_progress=args.progress,
         )
+
+    # Optional cover download
+    if args.download_covers and items:
+        download_covers(items, session, args.covers_dir)
 
     # Save output
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)

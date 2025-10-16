@@ -52,6 +52,8 @@ python scrape_javdb.py --url "https://javdb.com/?vft=5&vst=3" --max-pages 2 --ou
   - `--search-to-ja`: Translate each keyword to Japanese first (default: on), then match against original fields (title/actors/categories). Falls back to translated fields.
   - `--search-mode`: `or` (default) or `and` for multi-keyword matching.
   - `--show`: Display results in terminal with Chinese titles, covers, and magnets.
+  - `--download-covers`: Download cover images locally.
+  - `--covers-dir`: Directory to save cover images (default: covers).
 
 ### Notes
 
