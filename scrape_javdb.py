@@ -490,7 +490,7 @@ def parse_detail_for_magnets(soup: BeautifulSoup) -> List[str]:
         for m in chs_markers:
             if m in t:
                 return True
-        return False
+        return True
 
     preferred = [href for href, label in deduped_all if looks_chs(label)]
     if preferred:
