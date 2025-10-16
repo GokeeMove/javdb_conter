@@ -368,21 +368,8 @@ def download_covers(items: List[JavdbItem], session: requests.Session, covers_di
         safe_title = "".join(c for c in title_part if c.isalnum() or c in (' ', '-', '_', '(', ')')).strip()
         safe_title = safe_title[:30]  # Limit title length
         
-        # Use first magnet link in filename
-        magnet_part = ""
-        if item.magnets:
-            first_magnet = item.magnets[0]
-            # Remove common magnet prefix and sanitize
-            clean_magnet = first_magnet
-            if clean_magnet.startswith("magnet:?xt=urn:btih:"):
-                clean_magnet = clean_magnet[19:]  # Remove "magnet:?xt=urn:btih:"
-            # Sanitize magnet link for filename (replace problematic chars)
-            safe_magnet = clean_magnet.replace(":", "_").replace("?", "_").replace("&", "_").replace("=", "_")
-            safe_magnet = safe_magnet[:50]  # Limit length to avoid too long filenames
-            magnet_part = f"_{safe_magnet}"
-        
-        # Combine title and first magnet
-        filename = f"{safe_title}{magnet_part}.jpg"
+        # Use just the title for filename
+        filename = f"{safe_title}.jpg"
         
         # Ensure unique filename
         base_path = os.path.join(covers_dir, filename)
