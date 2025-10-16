@@ -16,15 +16,10 @@ pip install -r requirements.txt
 python scrape_javdb.py \
   --url "https://javdb.com/?vft=5&vst=3" \
   --max-pages 3 \
-  --out data.json \
-  --format json
+  --out data
 ```
 
-Or CSV:
-
-```bash
-python scrape_javdb.py --url "https://javdb.com/?vft=5&vst=3" --max-pages 2 --out data.csv --format csv
-```
+This will create both `data.json` and `data.csv` files.
 
 ### Options
 
@@ -35,8 +30,7 @@ python scrape_javdb.py --url "https://javdb.com/?vft=5&vst=3" --max-pages 2 --ou
 - `--user-agent`: Custom UA string.
 - `--cookies`: Raw cookie string like `name=value; name2=value2`.
 - `--proxy`: HTTP/HTTPS proxy, e.g. `http://127.0.0.1:7890`.
-- `--format`: `json` or `csv`.
-- `--out`: Output file path (default: `javdb_output.json`).
+- `--out`: Output file base name (default: `javdb_output`). Will create both `.json` and `.csv` files.
  - `--log-level`: Logging level `DEBUG|INFO|WARNING|ERROR` (default: `INFO`).
  - `--log-file`: Write logs to file path (default: stderr).
  - `--translate`: Enable free translation (Japanese -> Chinese) for fields.
@@ -54,6 +48,7 @@ python scrape_javdb.py --url "https://javdb.com/?vft=5&vst=3" --max-pages 2 --ou
   - `--show`: Display results in terminal with Chinese titles, covers, and magnets.
   - `--download-covers`: Download cover images locally.
   - `--covers-dir`: Directory to save cover images (default: covers).
+  - `--auto-folder`: Auto-create folder with keywords+timestamp for organized results (default: on).
 
 ### Notes
 

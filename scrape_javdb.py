@@ -764,8 +764,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--user-agent", default=None, help="Custom User-Agent string")
     p.add_argument("--cookies", default=None, help="Raw cookies string: name=value; name2=value2")
     p.add_argument("--proxy", default=None, help="Proxy URL, e.g. http://127.0.0.1:7890")
-    p.add_argument("--format", choices=["json", "csv"], default="json", help="Output format")
-    p.add_argument("--out", default="javdb_output.json", help="Output file path")
+    p.add_argument("--out", default="javdb_output", help="Output file base name (will create both .json and .csv)")
     # logging options
     p.add_argument("--log-level", default="INFO", help="Logging level: DEBUG, INFO, WARNING, ERROR")
     p.add_argument("--log-file", default=None, help="Write logs to file (default: stderr)")
@@ -792,11 +791,58 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--show", action="store_true", help="Display results in terminal (title_zh, cover, magnets)")
     p.add_argument("--download-covers", action="store_true", help="Download cover images locally")
     p.add_argument("--covers-dir", default="covers", help="Directory to save cover images (default: covers)")
+    p.add_argument("--auto-folder", action="store_true", default=True, help="Auto-create folder with keywords+timestamp for organized results")
     return p.parse_args(argv)
+
+
+def create_auto_folder(args) -> str:
+    """Create auto folder with keywords and timestamp"""
+    if not args.auto_folder:
+        return ""
+    
+    # Get keywords for folder name
+    keywords = []
+    if args.search:
+        for entry in (args.search or []):
+            if entry is None:
+                continue
+            parts = [p.strip() for p in str(entry).split(',') if p.strip()]
+            keywords.extend(parts)
+    
+    # Create folder name
+    if keywords:
+        # Sanitize keywords for folder name
+        safe_keywords = []
+        for k in keywords[:3]:  # Limit to first 3 keywords
+            safe_k = "".join(c for c in k if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_keywords.append(safe_k)
+        folder_name = "_".join(safe_keywords)
+    else:
+        folder_name = "javdb_results"
+    
+    # Add timestamp
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    auto_folder = f"{folder_name}_{timestamp}"
+    
+    os.makedirs(auto_folder, exist_ok=True)
+    return auto_folder
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+    
+    # Create auto folder if enabled
+    auto_folder = create_auto_folder(args)
+    if auto_folder:
+        # Update paths to use auto folder
+        if not args.log_file:
+            args.log_file = os.path.join(auto_folder, "scrape.log")
+        if not args.out.startswith("/") and not args.out.startswith("\\"):
+            args.out = os.path.join(auto_folder, args.out)
+        if args.download_covers and args.covers_dir == "covers":
+            args.covers_dir = os.path.join(auto_folder, "covers")
+    
     # setup logging early
     level = getattr(logging, str(args.log_level).upper(), logging.INFO)
     handlers: List[logging.Handler] = []
@@ -806,6 +852,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         handlers.append(logging.StreamHandler(sys.stderr))
     logging.basicConfig(level=level, format="%(asctime)s | %(levelname)s | %(message)s", handlers=handlers)
     logging.debug("Logger initialized")
+    
+    if auto_folder:
+        logging.info(f"Auto folder created: {auto_folder}")
     session = build_session(
         user_agent=args.user_agent,
         cookies=args.cookies,
@@ -938,18 +987,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.download_covers and items:
         download_covers(items, session, args.covers_dir)
 
-    # Save output
+    # Save output in both formats
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
-    if args.format == "json":
-        if not args.out.lower().endswith(".json"):
-            args.out += ".json"
-        save_json(items, args.out)
-    else:
-        if not args.out.lower().endswith(".csv"):
-            args.out += ".csv"
-        save_csv(items, args.out)
-
-    logging.info(f"Saved {len(items)} items to {args.out}")
+    
+    # Create both JSON and CSV files
+    json_path = args.out if args.out.lower().endswith(".json") else f"{args.out}.json"
+    csv_path = args.out if args.out.lower().endswith(".csv") else f"{args.out}.csv"
+    
+    save_json(items, json_path)
+    save_csv(items, csv_path)
+    
+    logging.info(f"Saved {len(items)} items to {json_path} and {csv_path}")
     
     # Optional terminal display
     if args.show and items:
