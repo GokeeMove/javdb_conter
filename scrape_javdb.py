@@ -362,16 +362,36 @@ def download_covers(items: List[JavdbItem], session: requests.Session, covers_di
         if not item.cover_url:
             continue
         
-        # Generate filename from code or title
-        if item.code:
-            filename = f"{item.code}.jpg"
-        else:
-            # Sanitize title for filename
-            safe_title = "".join(c for c in item.title if c.isalnum() or c in (' ', '-', '_')).strip()
-            safe_title = safe_title[:50]  # Limit length
-            filename = f"{safe_title}.jpg"
+        # Generate filename: Chinese title + first magnet hash
+        title_part = item.title_zh or item.title or "unknown"
+        # Sanitize title for filename
+        safe_title = "".join(c for c in title_part if c.isalnum() or c in (' ', '-', '_', '(', ')')).strip()
+        safe_title = safe_title[:30]  # Limit title length
         
-        local_path = os.path.join(covers_dir, filename)
+        # Use first magnet link in filename
+        magnet_part = ""
+        if item.magnets:
+            first_magnet = item.magnets[0]
+            # Remove common magnet prefix and sanitize
+            clean_magnet = first_magnet
+            if clean_magnet.startswith("magnet:?xt=urn:btih:"):
+                clean_magnet = clean_magnet[19:]  # Remove "magnet:?xt=urn:btih:"
+            # Sanitize magnet link for filename (replace problematic chars)
+            safe_magnet = clean_magnet.replace(":", "_").replace("?", "_").replace("&", "_").replace("=", "_")
+            safe_magnet = safe_magnet[:50]  # Limit length to avoid too long filenames
+            magnet_part = f"_{safe_magnet}"
+        
+        # Combine title and first magnet
+        filename = f"{safe_title}{magnet_part}.jpg"
+        
+        # Ensure unique filename
+        base_path = os.path.join(covers_dir, filename)
+        counter = 1
+        local_path = base_path
+        while os.path.exists(local_path):
+            name, ext = os.path.splitext(base_path)
+            local_path = f"{name}_{counter}{ext}"
+            counter += 1
         
         if download_cover(session, item.cover_url, local_path):
             downloaded += 1
@@ -405,10 +425,8 @@ def display_results(items: List[JavdbItem]) -> None:
                 print(f"    Cover: {item.cover_url} (local)")
         if item.magnets:
             print(f"    Magnets ({len(item.magnets)}):")
-            for j, magnet in enumerate(item.magnets[:2], 1):  # Show first 2 magnets
-                print(f"      {j}. {magnet[:80]}{'...' if len(magnet) > 80 else ''}")
-            if len(item.magnets) > 2:
-                print(f"      ... and {len(item.magnets) - 2} more")
+            for j, magnet in enumerate(item.magnets, 1):
+                print(f"      {j}. {magnet}")
         if item.detail_url:
             print(f"    Detail: {item.detail_url}")
         print("-" * 80)
