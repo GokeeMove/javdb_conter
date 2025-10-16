@@ -51,6 +51,7 @@ python scrape_javdb.py --url "https://javdb.com/?vft=5&vst=3" --max-pages 2 --ou
   - `--search`: Filter items by keyword. Can be repeated or comma-separated.
   - `--search-to-ja`: Translate each keyword to Japanese first (default: on), then match against original fields (title/actors/categories). Falls back to translated fields.
   - `--search-mode`: `or` (default) or `and` for multi-keyword matching.
+  - `--show`: Display results in terminal with Chinese titles, covers, and magnets.
 
 ### Notes
 

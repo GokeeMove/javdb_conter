@@ -328,6 +328,33 @@ def polite_sleep(delay_seconds: float) -> None:
     time.sleep(max(0.0, delay_seconds + random.uniform(-jitter, jitter)))
 
 
+def display_results(items: List[JavdbItem]) -> None:
+    """Display results in a terminal-friendly format"""
+    print("\n" + "="*80)
+    print(f"Found {len(items)} items:")
+    print("="*80)
+    
+    for i, item in enumerate(items, 1):
+        print(f"\n[{i}] {item.title_zh or item.title}")
+        if item.code:
+            print(f"    Code: {item.code}")
+        if item.actors:
+            print(f"    Actors: {', '.join(item.actors[:3])}{'...' if len(item.actors) > 3 else ''}")
+        if item.categories:
+            print(f"    Categories: {', '.join(item.categories[:3])}{'...' if len(item.categories) > 3 else ''}")
+        if item.cover_url:
+            print(f"    Cover: {item.cover_url}")
+        if item.magnets:
+            print(f"    Magnets ({len(item.magnets)}):")
+            for j, magnet in enumerate(item.magnets[:2], 1):  # Show first 2 magnets
+                print(f"      {j}. {magnet[:80]}{'...' if len(magnet) > 80 else ''}")
+            if len(item.magnets) > 2:
+                print(f"      ... and {len(item.magnets) - 2} more")
+        if item.detail_url:
+            print(f"    Detail: {item.detail_url}")
+        print("-" * 80)
+
+
 def scrape_listing(
     start_url: str,
     max_pages: int,
@@ -698,6 +725,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--search-to-ja", action="store_true", default=True, help="Translate search keyword to Japanese before filtering")
     p.add_argument("--search-mode", choices=["or", "and"], default="or", help="Multi-keyword match mode: or/and")
+    p.add_argument("--show", action="store_true", help="Display results in terminal (title_zh, cover, magnets)")
     return p.parse_args(argv)
 
 
@@ -852,6 +880,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         save_csv(items, args.out)
 
     logging.info(f"Saved {len(items)} items to {args.out}")
+    
+    # Optional terminal display
+    if args.show and items:
+        display_results(items)
+    
     return 0
 
 
