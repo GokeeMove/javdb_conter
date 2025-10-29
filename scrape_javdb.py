@@ -456,7 +456,17 @@ def scrape_listing(
 def parse_detail_for_magnets(soup: BeautifulSoup) -> List[str]:
     magnets_all: List[Tuple[str, str]] = []  # (href, label_text)
     # Common places: anchor href startswith magnet:, sometimes inside tables or lists
-    for a in soup.select('a[href^="magnet:"]'):
+    all_links = soup.select('a[href^="magnet:"]')
+    logging.debug(f"Found {len(all_links)} magnet links in page")
+    
+    if len(all_links) == 0:
+        # Try to find any links and log a sample
+        any_links = soup.select('a[href]')
+        sample_links = [(a.get('href', '')[:50], a.get_text(strip=True)[:30]) for a in any_links[:5]]
+        logging.warning(f"No magnet links found. Sample of other links: {sample_links}")
+        return []
+    
+    for a in all_links:
         href = a.get("href")
         if not href or not href.startswith("magnet:"):
             continue
@@ -469,15 +479,21 @@ def parse_detail_for_magnets(soup: BeautifulSoup) -> List[str]:
             if parent_text and len(parent_text) < 200:
                 label = f"{label} {parent_text}".strip()
         magnets_all.append((href, label))
+        logging.debug(f"Found magnet: {label[:50]} -> {href[:50]}...")
+
+    logging.debug(f"Collected {len(magnets_all)} raw magnet links")
 
     # Deduplicate by href while preserving order
     seen: set = set()
     deduped_all: List[Tuple[str, str]] = []
     for href, label in magnets_all:
         if href in seen:
+            logging.debug(f"Dropped duplicate magnet: {href[:50]}...")
             continue
         seen.add(href)
         deduped_all.append((href, label))
+
+    logging.debug(f"After deduplication: {len(deduped_all)} unique magnets")
 
     # Prefer Chinese-subtitle variants when detectable
     # Heuristics: label contains any of these markers
@@ -494,9 +510,12 @@ def parse_detail_for_magnets(soup: BeautifulSoup) -> List[str]:
 
     preferred = [href for href, label in deduped_all if looks_chs(label)]
     if preferred:
+        logging.debug(f"Using {len(preferred)} preferred magnets with Chinese markers")
         return preferred
     # Fallback to all if no Chinese marker found
-    return [href for href, _ in deduped_all]
+    result = [href for href, _ in deduped_all]
+    logging.debug(f"No Chinese markers found, returning all {len(result)} magnets")
+    return result
 
 
 def fetch_details_and_magnets(
@@ -516,11 +535,15 @@ def fetch_details_and_magnets(
             t1 = perf_counter()
             it.magnets = parse_detail_for_magnets(soup)
             t2 = perf_counter()
+            if len(it.magnets) == 0:
+                logging.warning(f"No magnets found for {it.code or 'item'}: {it.detail_url}")
             logging.info(
                 f"Detail parsed: fetch={(t1-t0)*1000:.1f} ms, parse={(t2-t1)*1000:.1f} ms, magnets={len(it.magnets)}"
             )
         except requests.RequestException as e:
-            logging.warning(f"Detail fetch failed: {e}")
+            logging.warning(f"Detail fetch failed for {it.code or 'item'}: {e} (URL: {it.detail_url})")
+        except Exception as e:
+            logging.error(f"Unexpected error parsing magnets for {it.code or 'item'}: {e}", exc_info=True)
         if show_progress:
             pct = (idx / total) * 100.0
             sys.stderr.write(f"\r[details] {idx}/{total} ({pct:.0f}%)")
