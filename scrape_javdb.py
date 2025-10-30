@@ -526,10 +526,14 @@ def fetch_details_and_magnets(
 ) -> None:
     import random
     total = len(items)
+    ANTI_SCRAPE_MAX = 30
     anti_spam_keywords = [
         "验证码", "verify", "認証", "認證", "anti-bot", "robot check", "登录", "登錄", "forbidden", "access denied", "人机验证", "too many requests", "429", "频率", "频繁", "過於頻繁", "captcha"
     ]
-    for idx, it in enumerate(items, start=1):
+    limit = min(total, ANTI_SCRAPE_MAX)
+    if total > ANTI_SCRAPE_MAX:
+        logging.warning(f"Only processing first {ANTI_SCRAPE_MAX} items for details/magnets to avoid anti-scraping trigger. Total items: {total} (rest will stay basic)")
+    for idx, it in enumerate(items[:limit], start=1):
         if not it.detail_url:
             continue
         logging.info(f"Detail {idx}/{total}: {it.detail_url}")
@@ -543,7 +547,6 @@ def fetch_details_and_magnets(
                 anti_sign = [k for k in anti_spam_keywords if k.lower() in html_text.lower()]
                 if anti_sign:
                     logging.error(f"Anti-crawler detected! Keywords: {anti_sign} in {it.detail_url}")
-                    # 遇到疑似反爬可选择sleep时间加倍
                     sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(0, 1)
                     logging.warning(f"Sleeping {sleep_time:.1f}s due to anti-crawler for {it.detail_url}")
                     time.sleep(sleep_time)
@@ -568,7 +571,6 @@ def fetch_details_and_magnets(
             time.sleep(backoff)
         if not success:
             logging.error(f"[AbortDetail] Failed to parse detail after 3 attempts: {it.detail_url}")
-        # detail之间sleep（无论是否成功），带少许随机扰动，节奏更自然
         final_delay = delay_seconds + random.uniform(0, 1)
         if show_progress:
             pct = (idx / total) * 100.0
@@ -808,6 +810,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Scrape javdb listing pages politely.")
     p.add_argument("--url", required=True, help="Listing URL to start from")
     p.add_argument("--max-pages", type=int, default=1, help="Max number of pages to crawl")
+    p.add_argument("--start-page", type=int, default=1, help="Page number to start scraping from (default: 1)")
     p.add_argument("--delay", type=float, default=1.5, help="Delay seconds between requests")
     p.add_argument("--timeout", type=int, default=20, help="HTTP timeout in seconds")
     p.add_argument("--user-agent", default=None, help="Custom User-Agent string")
@@ -878,6 +881,15 @@ def create_auto_folder(args) -> str:
     return auto_folder
 
 
+def _set_page_in_url(url: str, page: int) -> str:
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    qs['page'] = [str(page)]
+    new_query = urlencode(qs, doseq=True)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     
@@ -911,9 +923,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         timeout=args.timeout,
     )
 
+    # 动态构造起始url
+    start_url = args.url
+    if args.start_page and args.start_page > 1:
+        if 'page=' in args.url:
+            start_url = _set_page_in_url(args.url, args.start_page)
+        else:
+            if '?' in args.url:
+                start_url = args.url + f'&page={args.start_page}'
+            else:
+                start_url = args.url + f'?page={args.start_page}'
+        logging.info(f"Start page set to {args.start_page}: {start_url}")
+
+    # 调用分页方法
     try:
         items = scrape_listing(
-            start_url=args.url,
+            start_url=start_url,
             max_pages=args.max_pages,
             delay_seconds=args.delay,
             session=session,
