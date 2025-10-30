@@ -524,31 +524,57 @@ def fetch_details_and_magnets(
     delay_seconds: float,
     show_progress: bool,
 ) -> None:
+    import random
     total = len(items)
+    anti_spam_keywords = [
+        "验证码", "verify", "認証", "認證", "anti-bot", "robot check", "登录", "登錄", "forbidden", "access denied", "人机验证", "too many requests", "429", "频率", "频繁", "過於頻繁", "captcha"
+    ]
     for idx, it in enumerate(items, start=1):
         if not it.detail_url:
             continue
         logging.info(f"Detail {idx}/{total}: {it.detail_url}")
         t0 = perf_counter()
-        try:
-            soup = get_soup(session, it.detail_url)
-            t1 = perf_counter()
-            it.magnets = parse_detail_for_magnets(soup)
-            t2 = perf_counter()
-            if len(it.magnets) == 0:
-                logging.warning(f"No magnets found for {it.code or 'item'}: {it.detail_url}")
-            logging.info(
-                f"Detail parsed: fetch={(t1-t0)*1000:.1f} ms, parse={(t2-t1)*1000:.1f} ms, magnets={len(it.magnets)}"
-            )
-        except requests.RequestException as e:
-            logging.warning(f"Detail fetch failed for {it.code or 'item'}: {e} (URL: {it.detail_url})")
-        except Exception as e:
-            logging.error(f"Unexpected error parsing magnets for {it.code or 'item'}: {e}", exc_info=True)
+        success = False
+        for retry_count in range(3):
+            try:
+                soup = get_soup(session, it.detail_url)
+                html_text = str(soup)
+                # 反爬虫检测
+                anti_sign = [k for k in anti_spam_keywords if k.lower() in html_text.lower()]
+                if anti_sign:
+                    logging.error(f"Anti-crawler detected! Keywords: {anti_sign} in {it.detail_url}")
+                    # 遇到疑似反爬可选择sleep时间加倍
+                    sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(0, 1)
+                    logging.warning(f"Sleeping {sleep_time:.1f}s due to anti-crawler for {it.detail_url}")
+                    time.sleep(sleep_time)
+                    continue
+
+                t1 = perf_counter()
+                it.magnets = parse_detail_for_magnets(soup)
+                t2 = perf_counter()
+                if len(it.magnets) == 0:
+                    logging.warning(f"No magnets found for {it.code or 'item'}: {it.detail_url}")
+                logging.info(
+                    f"Detail parsed: fetch={(t1-t0)*1000:.1f} ms, parse={(t2-t1)*1000:.1f} ms, magnets={len(it.magnets)}"
+                )
+                success = True
+                break
+            except requests.RequestException as e:
+                logging.warning(f"Detail fetch failed for {it.code or 'item'} (try {retry_count+1}/3): {e} (URL: {it.detail_url})")
+            except Exception as e:
+                logging.error(f"Unexpected error parsing magnets for {it.code or 'item'} (try {retry_count+1}/3): {e}", exc_info=True)
+            backoff = delay_seconds * (2 ** retry_count) + random.uniform(0, 1)
+            logging.info(f"Retrying in {backoff:.1f}s...")
+            time.sleep(backoff)
+        if not success:
+            logging.error(f"[AbortDetail] Failed to parse detail after 3 attempts: {it.detail_url}")
+        # detail之间sleep（无论是否成功），带少许随机扰动，节奏更自然
+        final_delay = delay_seconds + random.uniform(0, 1)
         if show_progress:
             pct = (idx / total) * 100.0
             sys.stderr.write(f"\r[details] {idx}/{total} ({pct:.0f}%)")
             sys.stderr.flush()
-        polite_sleep(delay_seconds)
+        time.sleep(final_delay)
     if show_progress:
         sys.stderr.write("\n")
         sys.stderr.flush()
