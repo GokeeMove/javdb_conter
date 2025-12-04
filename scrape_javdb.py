@@ -706,6 +706,7 @@ def translate_items(
     target_lang: str,
     delay_seconds: float,
     show_progress: bool = False,
+    proxy: Optional[str] = None,
 ) -> None:
     # Build unique text pool to minimize API calls
     unique_texts: List[str] = []
@@ -731,6 +732,9 @@ def translate_items(
         return
 
     mt_session = requests.Session()
+    # Reuse main HTTP proxy for MT APIs if provided
+    if proxy:
+        mt_session.proxies.update({"http": proxy, "https": proxy})
     cache: Dict[str, str] = {}
 
     def do_translate(text: str) -> Optional[str]:
@@ -775,6 +779,7 @@ def translate_titles_only(
     target_lang: str,
     delay_seconds: float,
     show_progress: bool = False,
+    proxy: Optional[str] = None,
 ) -> None:
     # Build unique title set
     unique_titles: List[str] = []
@@ -788,6 +793,8 @@ def translate_titles_only(
         return
 
     mt_session = requests.Session()
+    if proxy:
+        mt_session.proxies.update({"http": proxy, "https": proxy})
     cache: Dict[str, str] = {}
 
     def do_translate(text: str) -> Optional[str]:
@@ -1002,6 +1009,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.search_to_ja:
                 try:
                     mt_session = requests.Session()
+                    if args.proxy:
+                        mt_session.proxies.update({"http": args.proxy, "https": args.proxy})
                     out: List[str] = []
                     for k in raw_keys:
                         ja = translate_google(mt_session, k, args.target_lang, "ja")
@@ -1064,6 +1073,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 target_lang=args.target_lang,
                 delay_seconds=args.mt_delay,
                 show_progress=args.progress,
+                proxy=args.proxy,
             )
         except Exception as e:
             logging.warning("Translation failed (skipping): %s", e)
@@ -1078,6 +1088,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 target_lang=args.target_lang,
                 delay_seconds=args.mt_delay,
                 show_progress=args.progress,
+                proxy=args.proxy,
             )
         except Exception as e:
             logging.warning("Title translation failed (skipping): %s", e)
