@@ -85,15 +85,49 @@ def detect_encoding(content: bytes) -> str:
 
 
 def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
-    t0 = perf_counter()
-    logging.debug(f"HTTP GET -> {url}")
-    resp = session.get(url)
-    dt = (perf_counter() - t0) * 1000
-    logging.debug(f"HTTP {resp.status_code} <- {url} ({len(resp.content)} bytes in {dt:.1f} ms)")
-    resp.raise_for_status()
-    encoding = resp.apparent_encoding or detect_encoding(resp.content)
-    html = resp.content.decode(encoding, errors="ignore")
-    return BeautifulSoup(html, "lxml")
+    """
+    Wrapper around session.get with small extra retry for flaky TLS issues like SSLEOFError.
+    We already have urllib3 Retry on the session, but some SSL errors still bubble up.
+    """
+    from requests.exceptions import SSLError, ConnectionError, ReadTimeout
+
+    max_attempts = 3
+    last_err: Optional[Exception] = None
+
+    for attempt in range(1, max_attempts + 1):
+        t0 = perf_counter()
+        logging.debug(f"HTTP GET ({attempt}/{max_attempts}) -> {url}")
+        try:
+            resp = session.get(url)
+            dt = (perf_counter() - t0) * 1000
+            logging.debug(
+                f"HTTP {resp.status_code} <- {url} ({len(resp.content)} bytes in {dt:.1f} ms)"
+            )
+            resp.raise_for_status()
+            encoding = resp.apparent_encoding or detect_encoding(resp.content)
+            html = resp.content.decode(encoding, errors="ignore")
+            return BeautifulSoup(html, "lxml")
+        except (SSLError, ConnectionError, ReadTimeout) as e:
+            last_err = e
+            logging.warning(
+                f"HTTP TLS/connection error on attempt {attempt}/{max_attempts} for {url}: {e}"
+            )
+            if attempt < max_attempts:
+                # short backoff; main politeness delay happens outside
+                backoff = 0.5 * attempt
+                logging.debug(f"Retrying {url} after {backoff:.1f}s due to TLS/connection error")
+                time.sleep(backoff)
+            else:
+                logging.error(
+                    f"Giving up on {url} after {max_attempts} attempts due to TLS/connection errors"
+                )
+        except Exception as e:
+            # Other errors propagate immediately
+            logging.error(f"Unexpected error fetching {url}: {e}", exc_info=True)
+            raise
+
+    # Should not reach here without last_err, but guard just in case
+    raise last_err or RuntimeError(f"Failed to fetch {url} due to repeated TLS/connection errors")
 
 
 @dataclass
