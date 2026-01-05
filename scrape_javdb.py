@@ -79,9 +79,35 @@ def build_session(user_agent: Optional[str], cookies: Optional[str], proxy: Opti
     return session
 
 
-def detect_encoding(content: bytes) -> str:
+def detect_encoding(content: bytes, content_type: Optional[str] = None) -> str:
+    """检测内容编码，优先使用 UTF-8"""
+    # 1. 检查 Content-Type header 中的 charset
+    if content_type:
+        import re
+        match = re.search(r'charset=([^\s;]+)', content_type, re.IGNORECASE)
+        if match:
+            return match.group(1).strip('"\'')
+    
+    # 2. 检查 HTML meta 标签中的 charset
+    # 只检查前 1024 字节以提高效率
+    head = content[:1024].decode('ascii', errors='ignore').lower()
+    if 'charset=utf-8' in head or 'encoding="utf-8"' in head:
+        return 'utf-8'
+    
+    # 3. 尝试 UTF-8 解码，如果成功就用 UTF-8
+    try:
+        content.decode('utf-8')
+        return 'utf-8'
+    except UnicodeDecodeError:
+        pass
+    
+    # 4. 最后使用 chardet 检测
     guess = chardet.detect(content)
-    return guess.get("encoding") or "utf-8"
+    detected = guess.get("encoding")
+    # chardet 有时会误判为 ISO-8859-1，对于亚洲网站优先使用 UTF-8
+    if detected and detected.lower() in ('iso-8859-1', 'ascii', 'windows-1252'):
+        return 'utf-8'
+    return detected or "utf-8"
 
 
 def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
@@ -104,8 +130,10 @@ def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
                 f"HTTP {resp.status_code} <- {url} ({len(resp.content)} bytes in {dt:.1f} ms)"
             )
             resp.raise_for_status()
-            encoding = resp.apparent_encoding or detect_encoding(resp.content)
-            html = resp.content.decode(encoding, errors="ignore")
+            # 使用改进的编码检测，优先 UTF-8
+            content_type = resp.headers.get('Content-Type', '')
+            encoding = detect_encoding(resp.content, content_type)
+            html = resp.content.decode(encoding, errors="replace")
             return BeautifulSoup(html, "lxml")
         except (SSLError, ConnectionError, ReadTimeout) as e:
             last_err = e
@@ -557,23 +585,29 @@ def fetch_details_and_magnets(
     session: requests.Session,
     delay_seconds: float,
     show_progress: bool,
+    detail_limit: int = 0,
 ) -> None:
     import random
     total = len(items)
-    ANTI_SCRAPE_MAX = 30
     anti_spam_keywords = [
         "验证码", "verify", "認証", "認證", "anti-bot", "robot check", "登录", "登錄", "forbidden", "access denied", "人机验证", "too many requests", "429", "频率", "频繁", "過於頻繁", "captcha"
     ]
-    limit = min(total, ANTI_SCRAPE_MAX)
-    if total > ANTI_SCRAPE_MAX:
-        logging.warning(f"Only processing first {ANTI_SCRAPE_MAX} items for details/magnets to avoid anti-scraping trigger. Total items: {total} (rest will stay basic)")
+    # detail_limit <= 0 means no limit
+    if detail_limit > 0:
+        limit = min(total, detail_limit)
+        if total > detail_limit:
+            logging.warning(f"Only processing first {detail_limit} items for details/magnets (--detail-limit). Total items: {total} (rest will stay basic)")
+    else:
+        limit = total
+    consecutive_empty = 0  # 连续空结果计数，用于检测隐蔽反爬
     for idx, it in enumerate(items[:limit], start=1):
         if not it.detail_url:
             continue
         logging.info(f"Detail {idx}/{total}: {it.detail_url}")
         t0 = perf_counter()
         success = False
-        for retry_count in range(3):
+        got_magnets = False
+        for retry_count in range(5):  # 增加重试次数到5次
             try:
                 soup = get_soup(session, it.detail_url)
                 html_text = str(soup)
@@ -581,7 +615,7 @@ def fetch_details_and_magnets(
                 anti_sign = [k for k in anti_spam_keywords if k.lower() in html_text.lower()]
                 if anti_sign:
                     logging.error(f"Anti-crawler detected! Keywords: {anti_sign} in {it.detail_url}")
-                    sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(0, 1)
+                    sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(2, 5)
                     logging.warning(f"Sleeping {sleep_time:.1f}s due to anti-crawler for {it.detail_url}")
                     time.sleep(sleep_time)
                     continue
@@ -589,23 +623,47 @@ def fetch_details_and_magnets(
                 t1 = perf_counter()
                 it.magnets = parse_detail_for_magnets(soup)
                 t2 = perf_counter()
+                
                 if len(it.magnets) == 0:
-                    logging.warning(f"No magnets found for {it.code or 'item'}: {it.detail_url}")
+                    # magnets为空也可能是隐蔽的反爬虫，进行重试
+                    logging.warning(f"No magnets found for {it.code or 'item'} (try {retry_count+1}/5): {it.detail_url}")
+                    if retry_count < 4:  # 还有重试机会
+                        sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(2, 5)
+                        logging.info(f"Retrying in {sleep_time:.1f}s (empty magnets may indicate anti-crawler)...")
+                        time.sleep(sleep_time)
+                        continue
+                else:
+                    got_magnets = True
+                    consecutive_empty = 0  # 重置计数
+                    
                 logging.info(
                     f"Detail parsed: fetch={(t1-t0)*1000:.1f} ms, parse={(t2-t1)*1000:.1f} ms, magnets={len(it.magnets)}"
                 )
                 success = True
                 break
             except requests.RequestException as e:
-                logging.warning(f"Detail fetch failed for {it.code or 'item'} (try {retry_count+1}/3): {e} (URL: {it.detail_url})")
+                logging.warning(f"Detail fetch failed for {it.code or 'item'} (try {retry_count+1}/5): {e} (URL: {it.detail_url})")
             except Exception as e:
-                logging.error(f"Unexpected error parsing magnets for {it.code or 'item'} (try {retry_count+1}/3): {e}", exc_info=True)
-            backoff = delay_seconds * (2 ** retry_count) + random.uniform(0, 1)
+                logging.error(f"Unexpected error parsing magnets for {it.code or 'item'} (try {retry_count+1}/5): {e}", exc_info=True)
+            backoff = delay_seconds * (2 ** retry_count) + random.uniform(1, 3)
             logging.info(f"Retrying in {backoff:.1f}s...")
             time.sleep(backoff)
+        
         if not success:
-            logging.error(f"[AbortDetail] Failed to parse detail after 3 attempts: {it.detail_url}")
-        final_delay = delay_seconds + random.uniform(0, 1)
+            logging.error(f"[AbortDetail] Failed to parse detail after 5 attempts: {it.detail_url}")
+        
+        # 跟踪连续空结果
+        if success and not got_magnets:
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                # 连续3个空结果，很可能触发了隐蔽反爬，增加长时间冷却
+                cooldown = 30 + random.uniform(10, 30)
+                logging.warning(f"[AntiCrawl] {consecutive_empty} consecutive empty results detected! Cooling down for {cooldown:.1f}s...")
+                time.sleep(cooldown)
+                consecutive_empty = 0  # 重置，给网站一个恢复机会
+        
+        # 基础延迟，增加随机性
+        final_delay = delay_seconds + random.uniform(0.5, 2.0)
         if show_progress:
             pct = (idx / total) * 100.0
             sys.stderr.write(f"\r[details] {idx}/{total} ({pct:.0f}%)")
@@ -872,6 +930,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # details options
     p.add_argument("--details", action="store_true", default=True, help="Fetch each detail page and extract magnets")
     p.add_argument("--detail-delay", type=float, default=1.0, help="Delay seconds between detail requests")
+    p.add_argument("--detail-limit", type=int, default=0, help="Max number of items to fetch details/magnets for (0=no limit, default: 0)")
     # search options
     p.add_argument(
         "--search",
@@ -1100,6 +1159,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             session=session,
             delay_seconds=args.detail_delay,
             show_progress=args.progress,
+            detail_limit=args.detail_limit,
         )
 
     # Optional cover download
