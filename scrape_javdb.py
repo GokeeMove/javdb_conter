@@ -600,6 +600,7 @@ def fetch_details_and_magnets(
     else:
         limit = total
     consecutive_empty = 0  # 连续空结果计数，用于检测隐蔽反爬
+    consecutive_fail = 0   # 连续失败计数
     for idx, it in enumerate(items[:limit], start=1):
         if not it.detail_url:
             continue
@@ -607,6 +608,7 @@ def fetch_details_and_magnets(
         t0 = perf_counter()
         success = False
         got_magnets = False
+        last_error: Optional[str] = None
         for retry_count in range(5):  # 增加重试次数到5次
             try:
                 soup = get_soup(session, it.detail_url)
@@ -614,6 +616,7 @@ def fetch_details_and_magnets(
                 # 反爬虫检测
                 anti_sign = [k for k in anti_spam_keywords if k.lower() in html_text.lower()]
                 if anti_sign:
+                    last_error = f"Anti-crawler keywords: {anti_sign}"
                     logging.error(f"Anti-crawler detected! Keywords: {anti_sign} in {it.detail_url}")
                     sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(2, 5)
                     logging.warning(f"Sleeping {sleep_time:.1f}s due to anti-crawler for {it.detail_url}")
@@ -626,6 +629,7 @@ def fetch_details_and_magnets(
                 
                 if len(it.magnets) == 0:
                     # magnets为空也可能是隐蔽的反爬虫，进行重试
+                    last_error = "Empty magnets (possible silent anti-crawler)"
                     logging.warning(f"No magnets found for {it.code or 'item'} (try {retry_count+1}/5): {it.detail_url}")
                     if retry_count < 4:  # 还有重试机会
                         sleep_time = delay_seconds * (2 ** retry_count) + random.uniform(2, 5)
@@ -635,22 +639,47 @@ def fetch_details_and_magnets(
                 else:
                     got_magnets = True
                     consecutive_empty = 0  # 重置计数
+                    consecutive_fail = 0   # 重置失败计数
                     
                 logging.info(
                     f"Detail parsed: fetch={(t1-t0)*1000:.1f} ms, parse={(t2-t1)*1000:.1f} ms, magnets={len(it.magnets)}"
                 )
                 success = True
                 break
+            except requests.exceptions.Timeout as e:
+                last_error = f"Timeout: {e}"
+                logging.warning(f"Detail timeout for {it.code or 'item'} (try {retry_count+1}/5): {e}")
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"Connection error: {e}"
+                logging.warning(f"Connection error for {it.code or 'item'} (try {retry_count+1}/5): {e}")
+            except requests.exceptions.HTTPError as e:
+                last_error = f"HTTP error {e.response.status_code if e.response else 'unknown'}: {e}"
+                logging.warning(f"HTTP error for {it.code or 'item'} (try {retry_count+1}/5): {e}")
+                # 403/429 可能是反爬，增加更长延迟
+                if e.response and e.response.status_code in (403, 429, 503):
+                    backoff = delay_seconds * (3 ** retry_count) + random.uniform(5, 15)
+                    logging.warning(f"Rate limited or blocked, sleeping {backoff:.1f}s...")
+                    time.sleep(backoff)
+                    continue
             except requests.RequestException as e:
-                logging.warning(f"Detail fetch failed for {it.code or 'item'} (try {retry_count+1}/5): {e} (URL: {it.detail_url})")
+                last_error = f"Request error: {e}"
+                logging.warning(f"Detail fetch failed for {it.code or 'item'} (try {retry_count+1}/5): {e}")
             except Exception as e:
+                last_error = f"Unexpected: {type(e).__name__}: {e}"
                 logging.error(f"Unexpected error parsing magnets for {it.code or 'item'} (try {retry_count+1}/5): {e}", exc_info=True)
             backoff = delay_seconds * (2 ** retry_count) + random.uniform(1, 3)
             logging.info(f"Retrying in {backoff:.1f}s...")
             time.sleep(backoff)
         
         if not success:
-            logging.error(f"[AbortDetail] Failed to parse detail after 5 attempts: {it.detail_url}")
+            consecutive_fail += 1
+            logging.error(f"[AbortDetail] Failed after 5 attempts: {it.detail_url} | Reason: {last_error}")
+            # 连续多次失败，可能是IP被封或网络问题
+            if consecutive_fail >= 3:
+                cooldown = 60 + random.uniform(30, 60)
+                logging.warning(f"[NetworkIssue] {consecutive_fail} consecutive failures! Cooling down for {cooldown:.1f}s...")
+                time.sleep(cooldown)
+                consecutive_fail = 0
         
         # 跟踪连续空结果
         if success and not got_magnets:
