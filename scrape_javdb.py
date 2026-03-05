@@ -17,6 +17,12 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+try:
+    from curl_cffi.requests import Session as CffiSession
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
 
 DEFAULT_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -28,32 +34,31 @@ DEFAULT_HEADERS = {
 
 
 def build_session(user_agent: Optional[str], cookies: Optional[str], proxy: Optional[str], timeout: int) -> requests.Session:
-    session = requests.Session()
+    use_cffi = HAS_CURL_CFFI
 
-    retry = Retry(
-        total=5,
-        backoff_factor=0.8,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=("GET", "HEAD"),
-        respect_retry_after_header=True,
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=32)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
+    if use_cffi:
+        logging.info("Using curl_cffi with browser impersonation (bypasses Cloudflare)")
+        session = CffiSession(impersonate="chrome")
+    else:
+        logging.warning("curl_cffi not available, falling back to requests (may get blocked by Cloudflare)")
+        session = requests.Session()
+        retry = Retry(
+            total=5,
+            backoff_factor=0.8,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET", "HEAD"),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=32)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
 
     headers = dict(DEFAULT_HEADERS)
     if user_agent:
         headers["user-agent"] = user_agent
-    else:
-        headers["user-agent"] = (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/127.0.0.0 Safari/537.36"
-        )
     session.headers.update(headers)
 
     if cookies:
-        # Accept raw cookie string: "a=b; c=d"
         for part in cookies.split(";"):
             if not part.strip():
                 continue
@@ -67,15 +72,17 @@ def build_session(user_agent: Optional[str], cookies: Optional[str], proxy: Opti
             "https": proxy,
         })
 
-    # Attach default timeout to session via request wrapper
-    original_request = session.request
+    if not use_cffi:
+        original_request = session.request
 
-    def request_with_timeout(method: str, url: str, **kwargs):
-        if "timeout" not in kwargs:
-            kwargs["timeout"] = timeout
-        return original_request(method, url, **kwargs)
+        def request_with_timeout(method: str, url: str, **kwargs):
+            if "timeout" not in kwargs:
+                kwargs["timeout"] = timeout
+            return original_request(method, url, **kwargs)
 
-    session.request = request_with_timeout  # type: ignore[assignment]
+        session.request = request_with_timeout  # type: ignore[assignment]
+
+    session._default_timeout = timeout  # type: ignore[attr-defined]
     return session
 
 
@@ -110,27 +117,23 @@ def detect_encoding(content: bytes, content_type: Optional[str] = None) -> str:
     return detected or "utf-8"
 
 
-def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
-    """
-    Wrapper around session.get with small extra retry for flaky TLS issues like SSLEOFError.
-    We already have urllib3 Retry on the session, but some SSL errors still bubble up.
-    """
+def get_soup(session, url: str) -> BeautifulSoup:
     from requests.exceptions import SSLError, ConnectionError, ReadTimeout
 
     max_attempts = 3
     last_err: Optional[Exception] = None
+    timeout = getattr(session, '_default_timeout', 20)
 
     for attempt in range(1, max_attempts + 1):
         t0 = perf_counter()
         logging.debug(f"HTTP GET ({attempt}/{max_attempts}) -> {url}")
         try:
-            resp = session.get(url)
+            resp = session.get(url, timeout=timeout)
             dt = (perf_counter() - t0) * 1000
             logging.debug(
                 f"HTTP {resp.status_code} <- {url} ({len(resp.content)} bytes in {dt:.1f} ms)"
             )
             resp.raise_for_status()
-            # 使用改进的编码检测，优先 UTF-8
             content_type = resp.headers.get('Content-Type', '')
             encoding = detect_encoding(resp.content, content_type)
             html = resp.content.decode(encoding, errors="replace")
@@ -141,7 +144,6 @@ def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
                 f"HTTP TLS/connection error on attempt {attempt}/{max_attempts} for {url}: {e}"
             )
             if attempt < max_attempts:
-                # short backoff; main politeness delay happens outside
                 backoff = 0.5 * attempt
                 logging.debug(f"Retrying {url} after {backoff:.1f}s due to TLS/connection error")
                 time.sleep(backoff)
@@ -150,11 +152,9 @@ def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
                     f"Giving up on {url} after {max_attempts} attempts due to TLS/connection errors"
                 )
         except Exception as e:
-            # Other errors propagate immediately
             logging.error(f"Unexpected error fetching {url}: {e}", exc_info=True)
             raise
 
-    # Should not reach here without last_err, but guard just in case
     raise last_err or RuntimeError(f"Failed to fetch {url} due to repeated TLS/connection errors")
 
 
